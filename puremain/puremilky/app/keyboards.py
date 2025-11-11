@@ -44,7 +44,7 @@ def start_survey_kb(lang, username=None):
     keyboard = [[KeyboardButton(text=txt_start)]]
     
     # Only show export button for @feniskcom
-    if username == "fenikscom":
+    if username == "ZSH_007":
         keyboard.insert(0, [KeyboardButton(text=txt_export)])
     
     return ReplyKeyboardMarkup(

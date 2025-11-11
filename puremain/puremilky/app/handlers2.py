@@ -159,7 +159,12 @@
 #     await state.update_data(phone=m.contact.phone_number)
 #     lang = user_lang[m.from_user.id]
 #     data = await state.get_data()
-#     add_promoter(m.from_user.id, data["name"], data["age"], data["phone"], lang,data["region"])
+#     region = data["region"]
+#     add_promoter(m.from_user.id, data["name"], data["age"], data["phone"], lang, region)
+    
+#     # Store region for this user permanently
+#     user_lang[f"{m.from_user.id}_region"] = region
+    
 #     await m.answer(texts[lang]["done"], reply_markup=ReplyKeyboardRemove())
 #     print(await state.get_data())
 #     await state.clear()
@@ -213,6 +218,9 @@
 # @router.message(F.text.in_(["📋 Новый опрос", "📋 Yangi so'rov"]))
 # async def start_survey(m: Message, state: FSMContext):
 #     lang = user_lang[m.from_user.id]
+#     # Get promoter's region from stored data
+#     region = user_lang.get(f"{m.from_user.id}_region", "default")
+#     await state.update_data(region=region)
 #     await m.answer(texts[lang]["name2"])
 #     await state.set_state(Survey.name)
 # #-------------------------------------------------------------
@@ -615,21 +623,33 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 import app.keyboards as kb
 from app.texts import texts
-from app.database import add_promoter
-from app.database import add_respondent
-from app.database import export_respondents_to_excel_bytes
+from app.database import add_promoter, add_respondent, export_respondents_to_excel_bytes, export_promoters_to_excel_bytes
 from aiogram.types import FSInputFile, BufferedInputFile
 import json
 import os
-
-BRANDS_FILE = "app/brands.json"
-
+from pathlib import Path
+# BRANDS_FILE = "app/brands.json"
+BASE_DIR = Path(__file__).resolve().parent  # app folder
+BRANDS_FILE = BASE_DIR / "brands.json"
 DEFAULT_BRANDS = [
     "Pure Milky", "Musaffo", "Essi", "Kamilka",
     "AgroBravo", "Lactel", "Доброе деревенское утро",
     "Другое", "Не знаю"
 ]
-
+BRANDS2=["Pure Milky", "Musaffo", "Essi", "Kamilka",
+    "AgroBravo", "Lactel", "Доброе деревенское утро",
+    "Другое", "Не знаю"]
+COMMERCIAL=[
+    "На австобусе",
+    "На баннере",
+    "В интернетe",
+    "На лед эекране",
+    "В магазине",
+    "В метро",
+    "На остановке",
+    "Другое",
+    "Пропустить"
+]
 
 def load_brands(region):
     if not os.path.exists(BRANDS_FILE):
@@ -718,6 +738,8 @@ class Survey(StatesGroup):
     q4_other=State()
     q5_other=State()
     q6_other=State()
+    q7_other = State()
+    q8_other = State()
 
 # ===== START COMMAND =====
 @router.message(Command("start"))
@@ -778,10 +800,13 @@ async def reg_phone(m: Message, state: FSMContext):
     await m.answer(texts[lang]["done"], reply_markup=ReplyKeyboardRemove())
     print(await state.get_data())
     await state.clear()
-    await m.answer(texts[lang]["req11"], reply_markup=kb.start_survey_kb(lang))
+    
+    # Show keyboard based on username
+    username = m.from_user.username
+    await m.answer(texts[lang]["req11"], reply_markup=kb.start_survey_kb(lang, username))
 
 
-BOOL=["Да", "Нет"]
+BOOL=["1", "2", "3", "4", "5", "Пропустить"]
 
 def milk_multi_kb(region, selected=None):
     selected = selected or set()
@@ -960,21 +985,26 @@ async def q2_other_multi(m: Message, state: FSMContext):
     user_region = d.get("region", "default")
     s = set(d.get("q2_selected", set()))
 
+    # Remove "Другое" first
     if "Другое" in s:
         s.remove("Другое")
 
     user_input = m.text.strip()
-    data = load_region_brands(user_region)
-    region_brands = data[user_region]
-
-    if user_input and user_input not in region_brands:
-        region_brands.insert(-2, user_input)
-        save_region_brands(data)
-
+    
+    # Add the new brand to region brands if it doesn't exist
     if user_input:
+        data = load_region_brands(user_region)
+        region_brands = data[user_region]
+
+        if user_input not in region_brands:
+            region_brands.insert(-2, user_input)
+            save_region_brands(data)
+        
+        # Add user input to selected set
         s.add(user_input)
 
-    await state.update_data(q2=", ".join(s))
+    # Save the updated selection with actual brand name
+    await state.update_data(q2=", ".join(s), q2_selected=list(s))
 
     await m.answer("3. " + texts[lang]["q9"], reply_markup=milk_multi_kb(region=user_region))
     await state.set_state(Survey.q3_multi)
@@ -1023,25 +1053,30 @@ async def q3_multi(c: CallbackQuery, state: FSMContext):
 @router.message(Survey.q3_other_multi)
 async def q3_other_multi(m: Message, state: FSMContext):
     lang = user_lang[m.from_user.id]
-    user_input = m.text.strip()
     d = await state.get_data()
     user_region = d.get("region", "default")
-    region_brands_data = load_region_brands(user_region)
-    region_brands = region_brands_data[user_region]
-    
-    if user_input and user_input not in region_brands:
-        region_brands.insert(-2, user_input)
-        save_region_brands(region_brands_data)
-    
     s = set(d.get("q3_selected", set()))
-
+    
+    # Remove "Другое" first
     if "Другое" in s:
         s.remove("Другое")
-
+    
+    user_input = m.text.strip()
+    
+    # Add the new brand to region brands if it doesn't exist
     if user_input:
+        region_brands_data = load_region_brands(user_region)
+        region_brands = region_brands_data[user_region]
+        
+        if user_input not in region_brands:
+            region_brands.insert(-2, user_input)
+            save_region_brands(region_brands_data)
+        
+        # Add user input to selected set
         s.add(user_input)
 
-    await state.update_data(q3=", ".join(s))
+    # Save the updated selection with actual brand name
+    await state.update_data(q3=", ".join(s), q3_selected=list(s))
     await m.answer("4. " + texts[lang]["q2"], reply_markup=kb_idx(region_brands, "q5"))
     await state.set_state(Survey.q2)
 
@@ -1108,37 +1143,113 @@ async def get_q4_other(m: Message, state: FSMContext):
     await m.answer("6. " + texts[lang]["q10"], reply_markup=kb_bool(BOOL, "q4"))
     await state.set_state(Survey.q4)
 
+# --- Helper function ---
+def modify_brands(brands: list[str]) -> list[str]:
+    """Remove 'Essi', rename 'AgroBravo' to 'Простоквашино', and add 'Пропустить'."""
+    if "Essi" in brands:
+        brands.remove("Essi")
+    brands = ["Простоквашино" if b == "AgroBravo" else b for b in brands]
+    if "Пропустить" not in brands:
+        brands.append("Пропустить")
+    return brands
 
+
+# --- Q4 handler ---
 @router.callback_query(Survey.q4)
 async def q4(c: CallbackQuery, state: FSMContext):
+    await c.answer()  # prevent double trigger
+
     _, i = c.data.split(":")
     val = BOOL[int(i)]
     lang = user_lang[c.from_user.id]
     data = await state.get_data()
     region = data.get("region", "default")
-    brands = load_brands(region)
+
+    brands = modify_brands(load_brands(region))
+
     if val == "Другое":
         await c.message.edit_text(texts[lang]["type"])
         await state.set_state(Survey.q5_other)
         return
+
     await state.update_data(q4=val)
     await c.message.edit_text("7. " + texts[lang]["q5"], reply_markup=kb_idx(brands, "q5"))
     await state.set_state(Survey.q5)
 
 
+# --- Q5_other handler ---
 @router.message(Survey.q5_other)
 async def get_q5_other(m: Message, state: FSMContext):
     await state.update_data(q4=m.text)
     user_input = m.text.strip()
     data = await state.get_data()
     region = data.get("region", "default")
-    brands = load_brands(region)
+
+    brands = modify_brands(load_brands(region))
+
+    # Save new input if not already in the list
     if user_input not in brands:
         brands.insert(-2, user_input)
         save_brands(region, brands)
+
     lang = user_lang[m.from_user.id]
     await m.answer("7. " + texts[lang]["q5"], reply_markup=kb_idx(brands, "q5"))
     await state.set_state(Survey.q5)
+
+
+# --- Q5 handler ---
+@router.callback_query(Survey.q5)
+async def q5(c: CallbackQuery, state: FSMContext):
+    await c.answer()  # prevent double trigger
+
+    data = await state.get_data()
+    region = data.get("region", "default")
+    brands = modify_brands(load_brands(region))
+
+    _, i = c.data.split(":")
+    val = brands[int(i)]
+    lang = user_lang[c.from_user.id]
+
+    if val == "Другое":
+        await c.message.edit_text(texts[lang]["type"])
+        await state.set_state(Survey.q6_other)
+        return
+
+    await state.update_data(q5=val)
+    await c.message.edit_text("8. " + texts[lang]["q6"], reply_markup=kb_idx(brands, "q6"))
+    await state.set_state(Survey.q6)
+
+
+# @router.callback_query(Survey.q4)
+# async def q4(c: CallbackQuery, state: FSMContext):
+#     _, i = c.data.split(":")
+#     val = BOOL[int(i)]
+#     lang = user_lang[c.from_user.id]
+#     data = await state.get_data()
+#     region = data.get("region", "default")
+#     brands = load_brands(region)
+#     if val == "Другое":
+#         await c.message.edit_text(texts[lang]["type"])
+#         await state.set_state(Survey.q5_other)
+#         return
+#     await state.update_data(q4=val)
+#     await c.message.edit_text("7. " + texts[lang]["q5"], reply_markup=kb_idx(brands, "q5"))
+#     await state.set_state(Survey.q5)
+
+
+# @router.message(Survey.q5_other)
+# async def get_q5_other(m: Message, state: FSMContext):
+#     await state.update_data(q4=m.text)
+#     user_input = m.text.strip()
+#     data = await state.get_data()
+#     region = data.get("region", "default")
+#     brands = load_brands(region)
+#     if user_input not in brands:
+#         brands.insert(-2, user_input)
+#         save_brands(region, brands)
+#     lang = user_lang[m.from_user.id]
+#     await m.answer("7. " + texts[lang]["q5"], reply_markup=kb_idx(brands, "q5"))
+#     await state.set_state(Survey.q5)
 
 @router.callback_query(Survey.q5)
 async def q5(c: CallbackQuery, state: FSMContext):
@@ -1154,7 +1265,7 @@ async def q5(c: CallbackQuery, state: FSMContext):
         return
     await state.update_data(q5=val)
 
-    await c.message.edit_text("8. " + texts[lang]["q6"], reply_markup=kb_idx(brands, "q6"))
+    await c.message.edit_text("8. " + texts[lang]["q6"], reply_markup=kb_idx(brands+["не видел"], "q6"))
     await state.set_state(Survey.q6)
 
 @router.message(Survey.q6_other)
@@ -1168,28 +1279,40 @@ async def get_q6_other(m: Message, state: FSMContext):
         brands.insert(-2, user_input)
         save_brands(region, brands)
     lang = user_lang[m.from_user.id]
-    await m.answer("8. " + texts[lang]["q6"], reply_markup=kb_idx(brands, "q6"))
+    await m.answer("8. " + texts[lang]["q6"], reply_markup=kb_idx(brands+["не видел"], "q6"))
     await state.set_state(Survey.q6)
 
 @router.callback_query(Survey.q6)
 async def q6(c: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     region = data.get("region", "default")
-    brands = load_brands(region)
+    brands = load_brands(region)+["не видел"]
     _, i = c.data.split(":")
     val = brands[int(i)]
     lang = user_lang[c.from_user.id]
     if val == "Другое":
         await c.message.edit_text(texts[lang]["type"])
-        await state.set_state(Survey.q6_other)
+        await state.set_state(Survey.q7_other)
         return
-    await state.update_data(q6=val)
-    await c.message.edit_text("9. " + texts[lang]["q7"])
-    await state.set_state(Survey.q7)
+    elif val == "не видел":
+        await state.update_data(q6=val)
+        lang = user_lang[c.from_user.id]
+        success = add_respondent(c.from_user.id, await state.get_data())
+        if not success:
+            await c.message.answer(texts[lang]["error"])
+            return
+        data = await state.get_data()
+        print("Survey result:", data)
+        await c.message.answer(texts[lang]["finish"])
+        await state.clear()
+    else:
+        await state.update_data(q6=val)
+        await c.message.edit_text("9. " + texts[lang]["q7"],reply_markup=kb_idx(COMMERCIAL, "q7"))
+        await state.set_state(Survey.q7)
 
 
-@router.message(Survey.q6_other)
-async def get_q6_other2(m: Message, state: FSMContext):
+@router.message(Survey.q7_other)
+async def get_q7_other2(m: Message, state: FSMContext):
     await state.update_data(q6=m.text)
     user_input = m.text.strip()
     data = await state.get_data()
@@ -1199,14 +1322,39 @@ async def get_q6_other2(m: Message, state: FSMContext):
         brands.insert(-2, user_input)
         save_brands(region, brands)
     lang = user_lang[m.from_user.id]
-    await m.answer("9. " + texts[lang]["q7"])
+    await m.answer("9. " + texts[lang]["q7"],reply_markup=kb_idx(COMMERCIAL, "q7"))
     await state.set_state(Survey.q7)
 
-@router.message(Survey.q7)
-async def get_q7(m: Message, state: FSMContext):
+@router.callback_query(Survey.q7)
+async def q7(c: CallbackQuery, state: FSMContext):
+    _, i = c.data.split(":")
+    val = COMMERCIAL[int(i)]
+    await state.update_data(q7=val)
+    data = await state.get_data()
+    lang = user_lang[c.from_user.id]
+
+    if val == "Другое":
+        await c.message.edit_text(texts[lang]["type"])
+        await state.set_state(Survey.q8_other)
+        return
+
+    await c.answer()  # <--- IMPORTANT: closes callback immediately
+    await c.message.edit_text(texts[lang]["finish"])
+    
+    success = add_respondent(c.from_user.id, data)
+    if not success:
+        await c.answer(texts[lang]["error"])
+        return
+    print("Survey result:", data)
+    await state.clear()
+
+
+@router.message(Survey.q8_other)
+async def get_q8_other(m: Message, state: FSMContext):
     await state.update_data(q7=m.text)
     data = await state.get_data()
     lang = user_lang[m.from_user.id]
+
     success = add_respondent(m.from_user.id, data)
     if not success:
         await m.answer(texts[lang]["error"])
@@ -1215,13 +1363,42 @@ async def get_q7(m: Message, state: FSMContext):
     await m.answer(texts[lang]["finish"])
     await state.clear()
 
-
 @router.message(F.text.in_(["📊 Экспорт респондентов","📊 Javoblar ro'yxati"]))
 async def export_respondents(m: Message):
-    buf = export_respondents_to_excel_bytes()
-    lang = user_lang[m.from_user.id]
-    if not buf:
-        await m.answer(texts[lang]["empty"])
+    # Debug: print username
+    username = m.from_user.username
+    print(f"Export button pressed by: @{username} (user_id: {m.from_user.id})")
+    
+    # Only allow user @fenikscom
+    if username != "fenikscom":
+        print(f"Access denied for @{username}")
+        await m.answer("⛔️ Access denied")
         return
-    file = BufferedInputFile(buf.getvalue(), filename="respondents.xlsx")
-    await m.answer_document(file)
+    
+    print("Access granted, exporting data...")
+    lang = user_lang.get(m.from_user.id, "ru")
+    
+    # Export respondents
+    respondents_buf = export_respondents_to_excel_bytes()
+    if respondents_buf:
+        respondents_file = BufferedInputFile(respondents_buf.getvalue(), filename="respondents.xlsx")
+        await m.answer_document(respondents_file, caption="📋 Respondents list")
+        print("Respondents file sent")
+    else:
+        await m.answer("No respondents data")
+        print("No respondents data")
+    
+    # Export promoters
+    try:
+        promoters_buf = export_promoters_to_excel_bytes()
+        if promoters_buf:
+            promoters_file = BufferedInputFile(promoters_buf.getvalue(), filename="promoters.xlsx")
+            await m.answer_document(promoters_file, caption="👥 Promoters list")
+            print("Promoters file sent")
+        else:
+            await m.answer("No promoters data")
+            print("No promoters data")
+    except Exception as e:
+        error_msg = f"Error exporting promoters: {str(e)}"
+        await m.answer(error_msg)
+        print(error_msg)
